@@ -1,104 +1,15 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import cors from 'cors';
-import { Player, CardType, GameStage, PublicPlayer, RoomState } from './types';
-import { createDeck } from './poker';
-
-const app = express();
-app.use(cors());
-const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*', methods: ['GET', 'POST'] } });
-
-interface InternalRoom {
-  id: string; name: string; smallBlind: number; bigBlind: number; pot: number;
-  communityCards: CardType[]; stage: GameStage; players: Player[]; deck: CardType[];
-  currentTurnSeatIndex: number; currentHighBet: number;
-}
-const rooms: Record<string, InternalRoom> = {};
-
-function getPublicRoomState(room: InternalRoom): RoomState {
-  const publicPlayers: PublicPlayer[] = room.players.map((p) => ({
-    id: p.id, name: p.name, avatar: p.avatar, chips: p.chips, currentBet: p.currentBet,
-    isFolded: p.isFolded, isAllIn: p.isAllIn, seatIndex: p.seatIndex,
-    cardCount: p.cards.length, showCards: room.stage === 'showdown' ? p.cards : undefined,
-  }));
-  return {
-    roomId: room.id, roomName: room.name, smallBlind: room.smallBlind, bigBlind: room.bigBlind,
-    pot: room.pot, communityCards: room.communityCards, stage: room.stage,
-    players: publicPlayers, currentTurnSeatIndex: room.currentTurnSeatIndex,
-    currentHighBet: room.currentHighBet,
-  };
-}
-
-io.on('connection', (socket) => {
-  socket.on('create_room', ({ roomName, userName, avatar }) => {
-    const roomId = 'room_' + Math.random().toString(36).substring(2, 8);
-    const hostPlayer: Player = {
-      id: socket.id, name: userName || '房主',
-      avatar: avatar || 'https://api.dicebear.com/7.x/bottts/svg?seed=' + socket.id,
-      chips: 5000, currentBet: 0, cards: [], isFolded: false, isAllIn: false,
-      seatIndex: 0, isReady: true,
-    };
-    rooms[roomId] = {
-      id: roomId, name: roomName || '德州大厅', smallBlind: 10, bigBlind: 20, pot: 0,
-      communityCards: [], stage: 'waiting', players: [hostPlayer], deck: [],
-      currentTurnSeatIndex: 0, currentHighBet: 0,
-    };
-    socket.join(roomId);
-    socket.emit('room_created', { roomId });
-    io.to(roomId).emit('room_state_update', getPublicRoomState(rooms[roomId]));
-  });
-
-  socket.on('join_room', ({ roomId, userName, avatar }) => {
-    const room = rooms[roomId];
-    if (!room) return socket.emit('error_message', '房间不存在！');
-    if (room.players.length >= 6) return socket.emit('error_message', '房间已满（最多6人）！');
-
-    const occupiedSeats = room.players.map((p) => p.seatIndex);
-    let freeSeat = 0;
-    while (occupiedSeats.includes(freeSeat)) freeSeat++;
-
-    const newPlayer: Player = {
-      id: socket.id, name: userName || '玩家_' + (freeSeat + 1),
-      avatar: avatar || 'https://api.dicebear.com/7.x/bottts/svg?seed=' + socket.id,
-      chips: 5000, currentBet: 0, cards: [], isFolded: false, isAllIn: false,
-      seatIndex: freeSeat, isReady: true,
-    };
-    room.players.push(newPlayer);
-    socket.join(roomId);
-    io.to(roomId).emit('room_state_update', getPublicRoomState(room));
-  });
-
-  socket.on('start_game', ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room) return;
-    room.deck = createDeck();
-    room.communityCards = [];
-    room.pot = 0;
-    room.stage = 'preflop';
-    room.players.forEach((p) => {
-      p.cards = [room.deck.pop()!, room.deck.pop()!];
-      p.isFolded = false;
-      p.currentBet = 0;
-      io.to(p.id).emit('your_cards', p.cards);
-    });
-    io.to(roomId).emit('room_state_update', getPublicRoomState(room));
-  });
-
-  socket.on('disconnect', () => {
-    for (const roomId in rooms) {
-      const room = rooms[roomId];
-      const index = room.players.findIndex((p) => p.id === socket.id);
-      if (index !== -1) {
-        room.players.splice(index, 1);
-        if (room.players.length === 0) delete rooms[roomId];
-        else io.to(roomId).emit('room_state_update', getPublicRoomState(room));
-        break;
-      }
-    }
-  });
-});
-
-const PORT = process.env.PORT || 4000;
-httpServer.listen(PORT, () => console.log('德州扑克 Socket.IO 联机后端已启动，端口:', PORT));
+import express from'express';import{createServer}from'http';import{Server}from'socket.io';import cors from'cors';import{createDeck,bestHand}from'./poker';import{CardType,Player,RoomState,ActionType}from'./types';
+const app=express();app.use(cors());const httpServer=createServer(app);const io=new Server(httpServer,{cors:{origin:'*'}});type Room={id:string;name:string;sb:number;bb:number;pot:number;deck:CardType[];board:CardType[];stage:RoomState['stage'];players:Player[];dealer:number;turn:number|null;high:number;minRaise:number;hand:number;acted:Set<string>;lastAction?:string};const rooms=new Map<string,Room>();
+const active=(r:Room)=>r.players.filter(p=>!p.folded);const ordered=(r:Room)=>[...r.players].sort((a,b)=>a.seatIndex-b.seatIndex);
+function nextSeat(r:Room,from:number){const ps=ordered(r);const idx=ps.findIndex(x=>x.seatIndex===from);for(let i=1;i<=ps.length;i++){const p=ps[(idx+i+ps.length)%ps.length];if(!p.folded&&!p.allIn)return p.seatIndex}return null}
+function pub(r:Room):RoomState{return{roomId:r.id,roomName:r.name,smallBlind:r.sb,bigBlind:r.bb,pot:r.pot,communityCards:r.board,stage:r.stage,players:r.players.map(p=>({id:p.id,name:p.name,chips:p.chips,seatIndex:p.seatIndex,folded:p.folded,allIn:p.allIn,streetBet:p.streetBet,totalBet:p.totalBet,cardCount:p.cards.length,showCards:r.stage==='showdown'?p.cards:undefined})),dealerSeat:r.dealer,currentTurnSeat:r.turn,currentHighBet:r.high,minRaise:r.minRaise,handNumber:r.hand,lastAction:r.lastAction}};
+function emit(r:Room){io.to(r.id).emit('state',pub(r))}
+function pay(p:Player,n:number){const x=Math.min(n,p.chips);p.chips-=x;p.streetBet+=x;p.totalBet+=x;if(p.chips===0)p.allIn=true;return x}
+function deal(r:Room){r.deck=createDeck();r.board=[];r.pot=0;r.high=0;r.minRaise=r.bb;r.acted=new Set();r.players.forEach(p=>{p.cards=[r.deck.pop()!,r.deck.pop()!];p.folded=false;p.allIn=false;p.streetBet=0;p.totalBet=0;io.to(p.id).emit('hole_cards',p.cards)});r.hand++;const ps=ordered(r);const di=ps.findIndex(p=>p.seatIndex===r.dealer);r.dealer=ps[(di+1+ps.length)%ps.length]?.seatIndex??0;const d=ordered(r).findIndex(p=>p.seatIndex===r.dealer);const arr=ordered(r);const sb=arr[(d+1)%arr.length],bb=arr[(d+2)%arr.length];pay(sb,r.sb);pay(bb,r.bb);r.high=r.bb;r.pot=r.sb+r.bb;r.stage='preflop';r.turn=nextSeat(r,bb.seatIndex);r.lastAction='新的一手开始';emit(r)}
+function showdown(r:Room){r.stage='showdown';r.turn=null;const live=active(r);if(live.length===1){live[0].chips+=r.pot;r.pot=0;r.lastAction=live[0].name+' 赢下底池';emit(r);return}const scores=live.map(p=>({p,h:bestHand([...p.cards,...r.board])})).sort((a,b)=>b.h.category-a.h.category||b.h.values.join(',').localeCompare(a.h.values.join(',')));const top=scores.filter(x=>x.h.category===scores[0].h.category&&x.h.values.join(',')===scores[0].h.values.join(','));const share=Math.floor(r.pot/top.length);top.forEach(x=>x.p.chips+=share);r.pot=0;r.lastAction=top.map(x=>x.p.name+'（'+x.h.name+'）').join('、')+' 获胜';emit(r)}
+function advance(r:Room){r.players.forEach(p=>p.streetBet=0);r.high=0;r.acted=new Set();if(r.stage==='preflop'){r.board.push(r.deck.pop()!,r.deck.pop()!,r.deck.pop()!);r.stage='flop'}else if(r.stage==='flop'){r.board.push(r.deck.pop()!);r.stage='turn'}else if(r.stage==='turn'){r.board.push(r.deck.pop()!);r.stage='river'}else if(r.stage==='river'){showdown(r);return}if(active(r).length<=1){showdown(r);return}r.turn=nextSeat(r,r.dealer);emit(r)}
+function maybe(r:Room){if(active(r).length<=1)return showdown(r);const can=active(r).filter(p=>!p.allIn);if(can.length===0)return advance(r);if(can.every(p=>p.streetBet===r.high&&r.acted.has(p.id)))advance(r)}
+function doAction(r:Room,p:Player,a:ActionType,amount?:number){if(r.turn!==p.seatIndex||p.folded||p.allIn||r.stage==='showdown')return;if(a==='fold'){p.folded=true;r.acted.add(p.id);r.lastAction=p.name+' 弃牌'}else if(a==='check'){if(p.streetBet!==r.high)return;pAction(r,p);r.lastAction=p.name+' 过牌'}else if(a==='call'){const n=pay(p,r.high-p.streetBet);r.acted.add(p.id);r.lastAction=p.name+' 跟注 '+n}else if(a==='bet'||a==='raise'){const target=Math.max(r.high+(a==='raise'?r.minRaise:r.bb),Number(amount)||0);if(target<=r.high||target>p.streetBet+p.chips)return;const inc=target-r.high;pay(p,target-p.streetBet);r.minRaise=Math.max(r.minRaise,inc);r.high=target;r.acted=new Set([p.id]);r.lastAction=p.name+' 加注到 '+target}else if(a==='allin'){const before=r.high;pay(p,p.chips);if(p.streetBet>r.high){r.minRaise=Math.max(r.minRaise,p.streetBet-r.high);r.high=p.streetBet;r.acted=new Set([p.id])}else r.acted.add(p.id);r.lastAction=p.name+' 全下'}r.pot=r.players.reduce((s,x)=>s+x.streetBet,0);r.turn=nextSeat(r,p.seatIndex);emit(r);maybe(r)}
+function pAction(r:Room,p:Player){r.acted.add(p.id)}
+function room(id:string,name:string):Room{return{id,name,sb:10,bb:20,pot:0,deck:[],board:[],stage:'waiting',players:[],dealer:0,turn:null,high:0,minRaise:20,hand:0,acted:new Set()}}
+io.on('connection',s=>{s.on('create_room',({roomName,userName})=>{const id=Math.random().toString(36).slice(2,8).toUpperCase();const r=room(id,roomName||'河畔牌局');r.players.push({id:s.id,name:userName||'玩家',chips:5000,cards:[],seatIndex:0,folded:false,allIn:false,streetBet:0,totalBet:0});rooms.set(id,r);s.join(id);s.emit('room_created',id);emit(r)});s.on('join_room',({roomId,userName})=>{const r=rooms.get(String(roomId).toUpperCase());if(!r)return s.emit('error_message','房间不存在');if(r.stage!=='waiting')return s.emit('error_message','牌局已开始，不能加入');if(r.players.length>=6)return s.emit('error_message','最多6人');let seat=0;const used=r.players.map(p=>p.seatIndex);while(used.includes(seat))seat++;r.players.push({id:s.id,name:userName||'玩家',chips:5000,cards:[],seatIndex:seat,folded:false,allIn:false,streetBet:0,totalBet:0});s.join(r.id);emit(r)});s.on('start_game',({roomId})=>{const r=rooms.get(roomId);if(r&&r.stage==='waiting'&&r.players.length>=2)deal(r);else s.emit('error_message','至少需要2名玩家')});s.on('action',({roomId,action,amount})=>{const r=rooms.get(roomId),p=r?.players.find(x=>x.id===s.id);if(r&&p)doAction(r,p,action,amount)});s.on('new_hand',({roomId})=>{const r=rooms.get(roomId);if(r?.stage==='showdown'&&r.players.length>=2)deal(r)});s.on('disconnect',()=>{for(const[rid,r]of rooms){const i=r.players.findIndex(p=>p.id===s.id);if(i>=0){r.players.splice(i,1);if(!r.players.length)rooms.delete(rid);else emit(r);break}}})});app.get('/health',(_,res)=>res.json({ok:true,rooms:rooms.size}));httpServer.listen(Number(process.env.PORT)||4000,()=>console.log('poker server on 4000'));
