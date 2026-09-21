@@ -1,0 +1,44 @@
+{
+  "name": "texas-holdem-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev:server": "tsx watch src/server.ts",
+    "dev:client": "vite",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "clsx": "^2.1.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.1",
+    "express": "^5.2.1",
+    "lucide-react": "^0.344.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "tailwind-merge": "^2.2.1",
+    "zustand": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.2",
+    "@types/react": "^18.2.56",
+    "@types/react-dom": "^18.2.19",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.18",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "ts-node-dev": "^2.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.4"
+  },
+  "description": "",
+  "main": "postcss.config.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
